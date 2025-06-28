@@ -1,10 +1,12 @@
+require('dotenv').config(); // Tải biến môi trường ngay lập tức
 const crypto = require('crypto');
 
-const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY; 
-const IV_LENGTH = 16; // Đối với thuật toán AES, IV là 16 bytes
+// Lấy khóa mã hóa từ biến môi trường.
+const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY;
+const IV_LENGTH = 16;
 
 if (!ENCRYPTION_KEY || ENCRYPTION_KEY.length !== 32) {
-    throw new Error('ENCRYPTION_KEY không hợp lệ. Vui lòng đặt một chuỗi 32 ký tự trong Secrets.');
+    throw new Error('ENCRYPTION_KEY không hợp lệ. Vui lòng kiểm tra lại file .env và đảm bảo giá trị là một chuỗi 32 ký tự.');
 }
 
 function encrypt(text) {
@@ -25,12 +27,7 @@ function decrypt(text) {
     return decrypted.toString();
 }
 
-function toBuffer(hex) {
-    return Buffer.from(hex, 'hex');
-}
-
-function fromBuffer(buffer) {
-    return buffer.toString('hex');
-}
+function toBuffer(hex) { return Buffer.from(hex, 'hex'); }
+function fromBuffer(buffer) { return buffer.toString('hex'); }
 
 module.exports = { encrypt, decrypt, toBuffer, fromBuffer };
