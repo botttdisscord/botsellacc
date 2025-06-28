@@ -1,14 +1,14 @@
+require('dotenv').config();
 const fs = require('node:fs');
 const path = require('node:path');
 const { Client, Collection, Events, GatewayIntentBits, ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder, StringSelectMenuBuilder, EmbedBuilder, ButtonBuilder, ButtonStyle, PermissionsBitField } = require('discord.js');
 const keepAlive = require('../keep-alive.js');
-const { addAccount, getAllAccounts, getAccountById, deleteAccountById, createOrder, findPendingOrderByUser, updateOrderStatus, updateAccountStatus, getSoldOrders, calculateTotalRevenue, getAccountsByCategory } = require('./utils/database');
+const { addAccount, getAllAccounts, getAccountById, deleteAccountById, createOrder, findPendingOrderByUser, updateOrderStatus, updateAccountStatus, getSoldOrders, calculateTotalRevenue, getAccountsByCategory, addCoupon, getCoupon, useCoupon, getAllCoupons } = require('./utils/database');
 const { encrypt, decrypt, toBuffer, fromBuffer } = require('./utils/encryption');
 const { getRecentTransactions } = require('./utils/casso.js');
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 client.commands = new Collection();
-
 const foldersPath = path.join(__dirname, 'commands');
 const commandFolders = fs.readdirSync(foldersPath);
 for (const folder of commandFolders) {
@@ -24,6 +24,7 @@ for (const folder of commandFolders) {
 }
 
 const pendingPayments = new Map();
+const userAppliedCoupons = new Map();
 const PAYMENT_TIMEOUT_MS = 10 * 60 * 1000;
 
 function hasAdminPermission(interaction) {
@@ -33,7 +34,7 @@ function hasAdminPermission(interaction) {
     return false;
 }
 
-client.once(Events.ClientReady, c => console.log(`✅ Sẵn sàng! Đã đăng nhập với tên ${c.user.tag}`));
+client.once(Events.ClientReady, c => console.log(`✅ Ready! Logged in as ${c.user.tag}`));
 
 function createShopPage(account, pageIndex, totalPages, category) {
     const shopEmbed = new EmbedBuilder()
@@ -42,7 +43,7 @@ function createShopPage(account, pageIndex, totalPages, category) {
         .setColor(0x3498DB)
         .addFields({ name: 'Giá bán', value: `${account.price.toLocaleString('vi-VN')} VNĐ` })
         .setFooter({ text: `Sản phẩm ${pageIndex + 1} / ${totalPages} | ID: ${account.id}` });
-
+    
     let images = [];
     if (account.image_urls) {
         try {
@@ -66,241 +67,317 @@ function createShopPage(account, pageIndex, totalPages, category) {
 }
 
 client.on(Events.InteractionCreate, async interaction => {
-    // 1. Xử lý lệnh Slash
-    if (interaction.isChatInputCommand()) {
-        const command = client.commands.get(interaction.commandName);
-        if (!command) return;
-        if (command.data.name === 'admin_panel' || command.data.name === 'setup_shop') {
-            if (!hasAdminPermission(interaction)) {
+    try {
+        if (interaction.isChatInputCommand()) {
+            const command = client.commands.get(interaction.commandName);
+            if (!command) return;
+            if (command.data.name === 'admin_panel' || command.data.name === 'setup_shop') {
+                if (!hasAdminPermission(interaction)) return interaction.reply({ content: 'Bạn không có quyền.', ephemeral: true });
+            }
+            await command.execute(interaction);
+        }
+        else if (interaction.isButton()) {
+            const customId = interaction.customId;
+            const isAdminInteraction = customId.startsWith('admin_');
+            if (isAdminInteraction && !hasAdminPermission(interaction)) {
                 return interaction.reply({ content: 'Bạn không có quyền.', ephemeral: true });
             }
-        }
-        try { await command.execute(interaction); }
-        catch (error) { console.error(error); await interaction.reply({ content: 'Có lỗi xảy ra!', ephemeral: true }); }
-    }
-    // 2. Xử lý Nút Bấm
-    else if (interaction.isButton()) {
-        const customId = interaction.customId;
-        const isAdminInteraction = customId.startsWith('admin_') || customId.startsWith('confirm_delete_') || customId === 'cancel_delete';
-        if (isAdminInteraction) {
-            if (!hasAdminPermission(interaction)) return interaction.reply({ content: 'Bạn không có quyền.', ephemeral: true });
-        }
 
-        if (customId === 'admin_add_account') {
-            const embed = new EmbedBuilder()
-                .setTitle('Chọn Loại Tài Khoản')
-                .setDescription('Vui lòng chọn loại tài khoản bạn muốn thêm vào cửa hàng.')
-                .setColor(0x5865F2);
-
-            const dropmailButton = new ButtonBuilder().setCustomId('admin_add_category_DROPMAIL').setLabel('ACC DROPMAIL').setStyle(ButtonStyle.Success);
-            const deadmailButton = new ButtonBuilder().setCustomId('admin_add_category_DEADMAIL').setLabel('ACC DEADMAIL FULL BH').setStyle(ButtonStyle.Danger);
-
-            const row = new ActionRowBuilder().addComponents(dropmailButton, deadmailButton);
-
-            await interaction.reply({ embeds: [embed], components: [row], ephemeral: true });
-        }
-        else if (customId.startsWith('admin_add_category_')) {
-            const category = customId.split('_')[3];
-            const modal = new ModalBuilder().setCustomId(`add_account_modal_${category}`).setTitle(`Thêm: ${category}`);
-            const nameInput = new TextInputBuilder().setCustomId('name').setLabel("Tên sản phẩm").setStyle(TextInputStyle.Short).setRequired(true);
-            const priceInput = new TextInputBuilder().setCustomId('price').setLabel("Giá bán (chỉ nhập số)").setStyle(TextInputStyle.Short).setRequired(true);
-            const descriptionInput = new TextInputBuilder().setCustomId('description').setLabel("Mô tả chi tiết").setStyle(TextInputStyle.Paragraph).setRequired(true);
-            const imageUrlsInput = new TextInputBuilder().setCustomId('imageUrls').setLabel("Các link ảnh (mỗi link một dòng)").setStyle(TextInputStyle.Paragraph).setRequired(false);
-            const credentialsInput = new TextInputBuilder().setCustomId('credentials').setLabel("Tài khoản & Mật khẩu (dòng 1: tk, dòng 2: mk)").setStyle(TextInputStyle.Paragraph).setRequired(true);
-            modal.addComponents(
-                new ActionRowBuilder().addComponents(nameInput),
-                new ActionRowBuilder().addComponents(priceInput),
-                new ActionRowBuilder().addComponents(descriptionInput),
-                new ActionRowBuilder().addComponents(imageUrlsInput),
-                new ActionRowBuilder().addComponents(credentialsInput)
-            );
-            await interaction.showModal(modal);
-        }
-        else if (customId === 'admin_manage_inventory') {
-            await interaction.deferReply({ ephemeral: true });
-            const accounts = getAllAccounts();
-            if (accounts.length === 0) { await interaction.editReply('Kho của bạn hiện đang trống.'); return; }
-            const options = accounts.map(acc => ({ label: acc.name, description: `Giá: ${acc.price.toLocaleString('vi-VN')} VNĐ - ID: ${acc.id}`, value: acc.id.toString(), }));
-            const selectMenu = new StringSelectMenuBuilder().setCustomId('select_account_to_manage').setPlaceholder('Chọn tài khoản...').addOptions(options);
-            await interaction.editReply({ content: 'Vui lòng chọn tài khoản:', components: [new ActionRowBuilder().addComponents(selectMenu)] });
-        }
-        else if (customId === 'admin_sales_history') {
-            await interaction.deferReply({ ephemeral: true });
-            const soldOrders = getSoldOrders();
-            const totalRevenue = calculateTotalRevenue();
-            if (soldOrders.length === 0) {
-                return interaction.editReply('Chưa có đơn hàng nào được bán.');
+            if (customId === 'admin_add_account') {
+                const embed = new EmbedBuilder().setTitle('Chọn Loại Tài Khoản').setDescription('Vui lòng chọn loại tài khoản bạn muốn thêm.').setColor(0x5865F2);
+                const dropmailButton = new ButtonBuilder().setCustomId('admin_add_category_DROPMAIL').setLabel('ACC DROPMAIL').setStyle(ButtonStyle.Success);
+                const deadmailButton = new ButtonBuilder().setCustomId('admin_add_category_DEADMAIL').setLabel('ACC DEADMAIL FULL BH').setStyle(ButtonStyle.Danger);
+                await interaction.reply({ embeds: [embed], components: [new ActionRowBuilder().addComponents(dropmailButton, deadmailButton)], ephemeral: true });
             }
-            const embed = new EmbedBuilder()
-                .setTitle('Lịch Sử Bán Hàng')
-                .setColor(0xF1C40F)
-                .setDescription(soldOrders.map(order => 
-                    `**Sản phẩm:** ${order.account_name || 'Tài khoản đã bị xóa'}\n` +
-                    `**Người mua:** <@${order.buyer_id}>\n` +
-                    `**Giá:** ${order.amount.toLocaleString('vi-VN')} VNĐ\n` +
-                    `**Thời gian:** <t:${Math.floor(new Date(order.created_at).getTime() / 1000)}:R>`
-                ).join('\n\n'))
-                .addFields({ name: 'Tổng Doanh Thu', value: `\`${totalRevenue.toLocaleString('vi-VN')} VNĐ\`` });
-            await interaction.editReply({ embeds: [embed] });
-        }
-        else if (customId.startsWith('confirm_delete_')) {
-            await interaction.deferUpdate();
-            const accountId = customId.split('_')[2];
-            if (deleteAccountById(accountId)) { await interaction.editReply({ content: `✅ Đã xóa tài khoản ID: ${accountId}.`, components: [], embeds: [] }); } else { await interaction.editReply({ content: `❌ Không thể xóa tài khoản ID: ${accountId}.`, components: [], embeds: [] }); }
-        }
-        else if (customId === 'cancel_delete') {
-            await interaction.update({ content: 'Hành động xóa đã được hủy.', components: [], embeds: [] });
-        }
-        else if (customId === 'view_shop') {
-            const categoryMenu = new StringSelectMenuBuilder()
-                .setCustomId('select_shop_category')
-                .setPlaceholder('Vui lòng chọn một danh mục...')
-                .addOptions(
-                    { label: 'ACC DROPMAIL', value: 'DROPMAIL', description: 'Tài khoản có thể thay đổi email.' },
-                    { label: 'ACC DEADMAIL FULL BH', value: 'DEADMAIL', description: 'Tài khoản không thể đổi email, có bảo hành.' }
+            else if (customId.startsWith('admin_add_category_')) {
+                const category = customId.split('_')[3];
+                const modal = new ModalBuilder().setCustomId(`add_account_modal_${category}`).setTitle(`Thêm: ${category}`);
+                const nameInput = new TextInputBuilder().setCustomId('name').setLabel("Tên sản phẩm").setStyle(TextInputStyle.Short).setRequired(true);
+                const priceInput = new TextInputBuilder().setCustomId('price').setLabel("Giá bán (chỉ nhập số)").setStyle(TextInputStyle.Short).setRequired(true);
+                const descriptionInput = new TextInputBuilder().setCustomId('description').setLabel("Mô tả chi tiết").setStyle(TextInputStyle.Paragraph).setRequired(true);
+                const imageUrlsInput = new TextInputBuilder().setCustomId('imageUrls').setLabel("Các link ảnh (mỗi link một dòng)").setStyle(TextInputStyle.Paragraph).setRequired(false);
+                const credentialsInput = new TextInputBuilder().setCustomId('credentials').setLabel("Tài khoản & Mật khẩu (dòng 1: tk, dòng 2: mk)").setStyle(TextInputStyle.Paragraph).setRequired(true);
+                modal.addComponents(new ActionRowBuilder().addComponents(nameInput), new ActionRowBuilder().addComponents(priceInput), new ActionRowBuilder().addComponents(descriptionInput), new ActionRowBuilder().addComponents(imageUrlsInput), new ActionRowBuilder().addComponents(credentialsInput));
+                await interaction.showModal(modal);
+            }
+            else if (customId === 'admin_manage_inventory') {
+                await interaction.deferReply({ ephemeral: true });
+                const accounts = getAllAccounts();
+                if (accounts.length === 0) { await interaction.editReply('Kho của bạn hiện đang trống.'); return; }
+                const options = accounts.map(acc => ({ label: acc.name, description: `Giá: ${acc.price.toLocaleString('vi-VN')} VNĐ - ID: ${acc.id}`, value: acc.id.toString(), }));
+                const selectMenu = new StringSelectMenuBuilder().setCustomId('select_account_to_manage').setPlaceholder('Chọn tài khoản...').addOptions(options);
+                await interaction.editReply({ content: 'Vui lòng chọn tài khoản:', components: [new ActionRowBuilder().addComponents(selectMenu)] });
+            }
+            else if (customId === 'admin_sales_history') {
+                await interaction.deferReply({ ephemeral: true });
+                const soldOrders = getSoldOrders();
+                const totalRevenue = calculateTotalRevenue();
+                if (soldOrders.length === 0) return interaction.editReply('Chưa có đơn hàng nào được bán.');
+                const embed = new EmbedBuilder().setTitle('Lịch Sử Bán Hàng').setColor(0xF1C40F)
+                    .setDescription(soldOrders.map(order => 
+                        `**Sản phẩm:** ${order.account_name || 'Tài khoản đã bị xóa'}\n` +
+                        `**Người mua:** <@${order.buyer_id}> | **Phương thức:** ${order.payment_method}\n` +
+                        `**Giá:** ${order.amount.toLocaleString('vi-VN')} VNĐ | **Coupon:** ${order.coupon_code || 'Không'}\n` +
+                        `**Thời gian:** <t:${Math.floor(new Date(order.created_at).getTime() / 1000)}:R>`
+                    ).join('\n\n'))
+                    .addFields({ name: 'Tổng Doanh Thu', value: `\`${totalRevenue.toLocaleString('vi-VN')} VNĐ\`` });
+                await interaction.editReply({ embeds: [embed] });
+            }
+            else if (customId === 'admin_manage_coupons') {
+                const row = new ActionRowBuilder().addComponents(
+                    new ButtonBuilder().setCustomId('admin_create_coupon').setLabel('Tạo Coupon Mới').setStyle(ButtonStyle.Success),
+                    new ButtonBuilder().setCustomId('admin_list_coupons').setLabel('Xem Tất Cả Coupon').setStyle(ButtonStyle.Secondary)
                 );
-            const row = new ActionRowBuilder().addComponents(categoryMenu);
-            await interaction.reply({ content: 'Bạn muốn xem loại tài khoản nào?', components: [row], ephemeral: true });
-        }
-        else if (customId.startsWith('shop_nav_')) {
-            await interaction.deferUpdate();
-            const [, , category, direction, currentIndexStr] = customId.split('_');
-            const currentIndex = parseInt(currentIndexStr);
-            const newIndex = direction === 'next' ? currentIndex + 1 : currentIndex - 1;
-            const accounts = getAccountsByCategory(category);
-            if (newIndex < 0 || newIndex >= accounts.length) return;
-            const shopPage = createShopPage(accounts[newIndex], newIndex, accounts.length, category);
-            await interaction.editReply(shopPage);
-        }
-        else if (customId.startsWith('view_images_')) {
-            await interaction.deferUpdate();
-            const [, , accountId, imageIndexStr] = customId.split('_');
-            const imageIndex = parseInt(imageIndexStr);
-            const account = getAccountById(accountId);
-            if (!account || !account.image_urls) return interaction.editReply({ content: 'Lỗi: Không tìm thấy ảnh.', components: [], embeds: [] });
-            const images = JSON.parse(account.image_urls);
-            if (imageIndex < 0 || imageIndex >= images.length) return;
-            const newEmbed = EmbedBuilder.from(interaction.message.embeds[0]).setImage(images[imageIndex]);
-            const prevIndex = imageIndex - 1;
-            const nextIndex = imageIndex + 1;
-            const row = new ActionRowBuilder()
-                .addComponents(
-                    new ButtonBuilder().setCustomId(`view_images_${accountId}_${prevIndex}`).setLabel('Trước').setStyle(ButtonStyle.Primary).setDisabled(prevIndex < 0),
-                    new ButtonBuilder().setCustomId(`view_images_${accountId}_${nextIndex}`).setLabel('Sau').setStyle(ButtonStyle.Primary).setDisabled(nextIndex >= images.length)
+                await interaction.reply({ content: 'Vui lòng chọn một hành động:', components: [row], ephemeral: true });
+            }
+            else if (customId === 'admin_create_coupon') {
+                const modal = new ModalBuilder().setCustomId('create_coupon_modal').setTitle('Tạo Mã Giảm Giá Mới');
+                const codeInput = new TextInputBuilder().setCustomId('coupon_code').setLabel("Mã coupon (VD: GIAMGIA10K)").setStyle(TextInputStyle.Short).setRequired(true);
+                const typeInput = new TextInputBuilder().setCustomId('coupon_type').setLabel("Loại giảm giá ('percentage' hoặc 'fixed')").setStyle(TextInputStyle.Short).setRequired(true);
+                const valueInput = new TextInputBuilder().setCustomId('coupon_value').setLabel("Giá trị (VD: 10 cho 10%, 10000 cho 10k)").setStyle(TextInputStyle.Short).setRequired(true);
+                const usesInput = new TextInputBuilder().setCustomId('coupon_uses').setLabel("Số lượt sử dụng").setStyle(TextInputStyle.Short).setRequired(true);
+                modal.addComponents(new ActionRowBuilder().addComponents(codeInput), new ActionRowBuilder().addComponents(typeInput), new ActionRowBuilder().addComponents(valueInput), new ActionRowBuilder().addComponents(usesInput));
+                await interaction.showModal(modal);
+            }
+            else if (customId === 'admin_list_coupons') {
+                await interaction.deferReply({ ephemeral: true });
+                const coupons = getAllCoupons();
+                if (coupons.length === 0) return interaction.editReply('Chưa có coupon nào được tạo.');
+                const embed = new EmbedBuilder().setTitle('Danh sách Mã Giảm Giá').setColor(0x9B59B6);
+                coupons.forEach(c => {
+                    embed.addFields({ name: `Mã: \`${c.code}\``, value: `Loại: ${c.discount_type} | Giá trị: ${c.discount_value} | Lượt dùng còn lại: ${c.uses_left}` });
+                });
+                await interaction.editReply({ embeds: [embed] });
+            }
+            else if (customId.startsWith('confirm_delete_')) {
+                await interaction.deferUpdate();
+                const accountId = customId.split('_')[2];
+                if (deleteAccountById(accountId)) { await interaction.editReply({ content: `✅ Đã xóa tài khoản ID: ${accountId}.`, components: [], embeds: [] }); } else { await interaction.editReply({ content: `❌ Không thể xóa tài khoản ID: ${accountId}.`, components: [], embeds: [] }); }
+            }
+            else if (customId === 'cancel_delete') {
+                await interaction.update({ content: 'Hành động xóa đã được hủy.', components: [], embeds: [] });
+            }
+            else if (customId === 'view_shop') {
+                const categoryMenu = new StringSelectMenuBuilder().setCustomId('select_shop_category').setPlaceholder('Vui lòng chọn một danh mục...').addOptions({ label: 'ACC DROPMAIL', value: 'DROPMAIL' }, { label: 'ACC DEADMAIL FULL BH', value: 'DEADMAIL' });
+                await interaction.reply({ content: 'Bạn muốn xem loại tài khoản nào?', components: [new ActionRowBuilder().addComponents(categoryMenu)], ephemeral: true });
+            }
+            else if (customId.startsWith('shop_nav_')) {
+                await interaction.deferUpdate();
+                const [, , category, direction, currentIndexStr] = customId.split('_');
+                const currentIndex = parseInt(currentIndexStr);
+                const newIndex = direction === 'next' ? currentIndex + 1 : currentIndex - 1;
+                const accounts = getAccountsByCategory(category);
+                if (newIndex < 0 || newIndex >= accounts.length) return;
+                const shopPage = createShopPage(accounts[newIndex], newIndex, accounts.length, category);
+                await interaction.editReply(shopPage);
+            }
+            else if (customId.startsWith('view_images_')) {
+                await interaction.deferUpdate();
+                const [, , accountId, imageIndexStr] = customId.split('_');
+                const imageIndex = parseInt(imageIndexStr);
+                const account = getAccountById(accountId);
+                if (!account || !account.image_urls) return interaction.editReply({ content: 'Lỗi: Không tìm thấy ảnh.', components: [], embeds: [] });
+                const images = JSON.parse(account.image_urls);
+                if (imageIndex < 0 || imageIndex >= images.length) return;
+                const newEmbed = EmbedBuilder.from(interaction.message.embeds[0]).setImage(images[imageIndex]);
+                const prevIndex = imageIndex - 1;
+                const nextIndex = imageIndex + 1;
+                const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(`view_images_${accountId}_${prevIndex}`).setLabel('Trước').setStyle(ButtonStyle.Primary).setDisabled(prevIndex < 0), new ButtonBuilder().setCustomId(`view_images_${accountId}_${nextIndex}`).setLabel('Sau').setStyle(ButtonStyle.Primary).setDisabled(nextIndex >= images.length));
+                await interaction.editReply({ embeds: [newEmbed], components: [row] });
+            }
+            else if (customId.startsWith('buy_now_')) {
+                await interaction.update({ content: 'Đang xử lý...', embeds: [], components: [] });
+                const accountId = customId.split('_')[2];
+                const account = getAccountById(accountId);
+                if (!account) return interaction.followUp({ content: 'Lỗi: Tài khoản không tồn tại.', ephemeral: true });
+                const paymentChoiceEmbed = new EmbedBuilder().setTitle(`Thanh toán cho: ${account.name}`).setDescription(`Vui lòng chọn phương thức thanh toán của bạn.\n**Giá:** ${account.price.toLocaleString('vi-VN')} VNĐ`).setColor(0xFFA500);
+                const choiceRow = new ActionRowBuilder().addComponents(
+                    new ButtonBuilder().setCustomId(`pay_bank_${accountId}`).setLabel('Chuyển khoản (VietQR)').setStyle(ButtonStyle.Success).setEmoji('🏦'),
+                    new ButtonBuilder().setCustomId(`pay_card_${accountId}`).setLabel('Thẻ cào điện thoại').setStyle(ButtonStyle.Primary).setEmoji('📱'),
+                    new ButtonBuilder().setCustomId(`apply_coupon_${accountId}`).setLabel('Áp dụng Coupon').setStyle(ButtonStyle.Secondary).setEmoji('🎟️')
                 );
-            await interaction.editReply({ embeds: [newEmbed], components: [row] });
-        }
-        else if (customId.startsWith('buy_now_')) {
-            await interaction.update({ content: 'Đang xử lý đơn hàng của bạn...', embeds: [], components: [] });
-            await interaction.followUp({ content: 'Vui lòng kiểm tra tin nhắn riêng để hoàn tất thanh toán.', ephemeral: true });
-            if (pendingPayments.has(interaction.user.id)) {
-                await interaction.followUp({ content: 'Bạn đang có một giao dịch đang chờ thanh toán.', ephemeral: true });
-                return;
+                await interaction.followUp({ embeds: [paymentChoiceEmbed], components: [choiceRow], ephemeral: true });
             }
-            const accountId = customId.split('_')[2];
-            const account = getAccountById(accountId);
-            if (!account || account.status !== 'available') {
-                await interaction.followUp({ content: 'Tài khoản này đã được bán hoặc không tồn tại.', ephemeral: true });
-                return;
-            }
-            const orderId = `VALO${Date.now()}${interaction.user.id.slice(-4)}`;
-            createOrder(orderId, interaction.user.id, account.id, account.price);
-            const bankId = process.env.BANK_ID;
-            const accountNo = process.env.ACCOUNT_NO;
-            const accountName = process.env.ACCOUNT_NAME;
-            if (!bankId || !accountNo || !accountName) {
-                await interaction.followUp({ content: "Lỗi: Hệ thống thanh toán chưa được cấu hình đầy đủ.", ephemeral: true });
-                return;
-            }
-            const vietQR_URL = `https://img.vietqr.io/image/${bankId}-${accountNo}-compact.png?amount=${account.price}&addInfo=${encodeURIComponent(orderId)}&accountName=${encodeURIComponent(accountName)}`;
-            const paymentEmbed = new EmbedBuilder().setTitle(`Đơn Hàng: ${account.name}`).setDescription(`Vui lòng thanh toán bằng cách quét mã QR.\n\n**NỘI DUNG CHUYỂN KHOẢN BẮT BUỘC:**`).addFields({ name: 'Nội dung', value: `\`${orderId}\`` }, { name: 'Số tiền', value: `\`${account.price.toLocaleString('vi-VN')} VNĐ\`` }).setImage(vietQR_URL).setColor(0xFFA500).setFooter({ text: 'Bạn có 10 phút để thanh toán.' });
-            let paymentMessage;
-            try {
-                paymentMessage = await interaction.user.send({ embeds: [paymentEmbed] });
-            } catch (error) {
-                console.error("Lỗi chi tiết khi gửi DM:", error);
-                await interaction.followUp({ content: 'Lỗi: Không thể gửi tin nhắn riêng cho bạn.', ephemeral: true });
-                updateOrderStatus(orderId, 'cancelled');
-                return;
-            }
-            const checkInterval = setInterval(async () => {
-                const transactions = await getRecentTransactions();
-                const paidTx = transactions.find(tx => tx.amount === account.price && tx.description.includes(orderId));
-                if (paidTx) {
-                    clearInterval(checkInterval);
-                    pendingPayments.delete(interaction.user.id);
-                    updateOrderStatus(orderId, 'paid');
-                    updateAccountStatus(account.id, 'sold');
-                    paymentMessage.delete().catch(err => console.error("Không thể xóa tin nhắn thanh toán (thành công):", err));
-                    const user = decrypt(fromBuffer(account.username));
-                    const pass = decrypt(fromBuffer(account.password));
-                    const successEmbed = new EmbedBuilder().setTitle('✅ Thanh Toán Thành Công!').setDescription(`Cảm ơn bạn đã mua **${account.name}**. Dưới đây là thông tin đăng nhập:`).addFields({ name: 'Tên đăng nhập', value: `\`${user}\`` }, { name: 'Mật khẩu', value: `\`${pass}\`` }).setColor(0x2ECC71).setFooter({ text: "Vui lòng đổi mật khẩu ngay lập tức." });
-                    await interaction.user.send({ embeds: [successEmbed] });
+            else if (customId.startsWith('pay_bank_')) {
+                await interaction.update({ content: 'Đang tạo mã QR, vui lòng chờ...', components: [], embeds: [] });
+                if (pendingPayments.has(interaction.user.id)) return interaction.followUp({ content: 'Bạn đang có một giao dịch đang chờ.', ephemeral: true });
+                const accountId = customId.split('_')[2];
+                const account = getAccountById(accountId);
+                if (!account || account.status !== 'available') return interaction.followUp({ content: 'Tài khoản này đã được bán.', ephemeral: true });
+
+                const appliedCoupon = userAppliedCoupons.get(interaction.user.id);
+                let finalPrice = account.price;
+                if (appliedCoupon) {
+                    if (appliedCoupon.discount_type === 'percentage') {
+                        finalPrice -= Math.floor(account.price * (appliedCoupon.discount_value / 100));
+                    } else {
+                        finalPrice -= appliedCoupon.discount_value;
+                    }
+                    finalPrice = Math.max(0, finalPrice); // Đảm bảo giá không âm
                 }
-            }, 15 * 1000);
-            pendingPayments.set(interaction.user.id, { intervalId: checkInterval, message: paymentMessage, orderId: orderId });
-            setTimeout(() => {
-                const paymentInfo = pendingPayments.get(interaction.user.id);
-                if (paymentInfo && paymentInfo.orderId === orderId) {
-                    clearInterval(paymentInfo.intervalId);
-                    pendingPayments.delete(interaction.user.id);
-                    updateOrderStatus(paymentInfo.orderId, 'cancelled');
-                    paymentInfo.message.delete().catch(err => console.error("Không thể xóa tin nhắn thanh toán (hết hạn):", err));
-                    interaction.user.send(`Đơn hàng \`${paymentInfo.orderId}\` đã tự động hủy do quá hạn thanh toán.`).catch(() => {});
+                
+                const orderId = `VALO${Date.now()}`;
+                createOrder(orderId, interaction.user.id, account.id, finalPrice, 'bank', appliedCoupon?.code);
+                
+                const bankId = process.env.BANK_ID, accountNo = process.env.ACCOUNT_NO, accountName = process.env.ACCOUNT_NAME;
+                if (!bankId || !accountNo || !accountName) return interaction.followUp({ content: "Lỗi: Hệ thống thanh toán chưa được cấu hình.", ephemeral: true });
+                const vietQR_URL = `https://img.vietqr.io/image/${bankId}-${accountNo}-compact.png?amount=${finalPrice}&addInfo=${encodeURIComponent(orderId)}&accountName=${encodeURIComponent(accountName)}`;
+                const paymentEmbed = new EmbedBuilder().setTitle(`Đơn Hàng: ${account.name}`).setDescription(`Vui lòng thanh toán bằng cách quét mã QR.\n\n**NỘI DUNG CHUYỂN KHOẢN BẮT BUỘC:**`).addFields({ name: 'Nội dung', value: `\`${orderId}\`` }, { name: 'Số tiền', value: `\`${finalPrice.toLocaleString('vi-VN')} VNĐ\`` }).setImage(vietQR_URL).setColor(0xFFA500).setFooter({ text: 'Bạn có 10 phút để thanh toán.' });
+                
+                let paymentMessage;
+                try {
+                    paymentMessage = await interaction.user.send({ embeds: [paymentEmbed] });
+                    await interaction.followUp({ content: `Đã gửi hướng dẫn thanh toán vào tin nhắn riêng của bạn!`, ephemeral: true });
+                } catch (error) {
+                    console.error("Lỗi gửi DM:", error);
+                    await interaction.followUp({ content: 'Lỗi: Không thể gửi tin nhắn riêng cho bạn.', ephemeral: true });
+                    updateOrderStatus(orderId, 'cancelled'); return;
                 }
-            }, PAYMENT_TIMEOUT_MS);
-        }
-    }
-    // 3. Xử lý Form (Modal) Submit
-    else if (interaction.isModalSubmit()) {
-        if (interaction.customId.startsWith('add_account_modal_')) {
-            const category = interaction.customId.split('_')[3];
-            if (!hasAdminPermission(interaction)) return interaction.reply({ content: 'Bạn không có quyền.', ephemeral: true });
-            await interaction.deferReply({ ephemeral: true });
-            try {
-                const name = interaction.fields.getTextInputValue('name');
-                const price = parseInt(interaction.fields.getTextInputValue('price'));
-                const description = interaction.fields.getTextInputValue('description');
-                const imageUrlsText = interaction.fields.getTextInputValue('imageUrls') || '';
-                const credentialsText = interaction.fields.getTextInputValue('credentials');
-                const [username, password] = credentialsText.split('\n').map(line => line.trim()).filter(line => line);
-                if (!username || !password) { await interaction.editReply({ content: 'Vui lòng nhập Tên đăng nhập và Mật khẩu trên hai dòng riêng biệt.' }); return; }
-                const imageUrls = imageUrlsText.split('\n').map(url => url.trim()).filter(url => url);
-                const imageUrlsJson = JSON.stringify(imageUrls);
-                if (isNaN(price)) { await interaction.editReply('Giá tiền phải là một con số.'); return; }
-                const encryptedUsername = encrypt(username);
-                const encryptedPassword = encrypt(password);
-                addAccount(name, price, description, imageUrlsJson, category, toBuffer(encryptedUsername), toBuffer(encryptedPassword));
-                await interaction.editReply({ content: `✅ Đã thêm tài khoản **${category}** thành công!` });
-            } catch (error) {
-                console.error('Lỗi khi thêm tài khoản:', error);
-                await interaction.editReply({ content: '❌ Có lỗi xảy ra khi thêm tài khoản.' });
+                
+                const checkInterval = setInterval(async () => {
+                    const transactions = await getRecentTransactions();
+                    const paidTx = transactions.find(tx => tx.amount === finalPrice && tx.description.includes(orderId));
+                    if (paidTx) {
+                        clearInterval(checkInterval);
+                        pendingPayments.delete(interaction.user.id);
+                        if(appliedCoupon) useCoupon(appliedCoupon.code);
+                        userAppliedCoupons.delete(interaction.user.id);
+                        updateOrderStatus(orderId, 'paid');
+                        updateAccountStatus(account.id, 'sold');
+                        paymentMessage.delete().catch(console.error);
+                        const user = decrypt(fromBuffer(account.username)), pass = decrypt(fromBuffer(account.password));
+                        const successEmbed = new EmbedBuilder().setTitle('✅ Thanh Toán Thành Công!').setDescription(`Cảm ơn bạn đã mua **${account.name}**. Dưới đây là thông tin đăng nhập:`).addFields({ name: 'Tên đăng nhập', value: `\`${user}\`` }, { name: 'Mật khẩu', value: `\`${pass}\`` }).setColor(0x2ECC71);
+                        await interaction.user.send({ embeds: [successEmbed] });
+                    }
+                }, 15000);
+                pendingPayments.set(interaction.user.id, { intervalId: checkInterval, message: paymentMessage, orderId: orderId });
+                setTimeout(() => {
+                    const paymentInfo = pendingPayments.get(interaction.user.id);
+                    if (paymentInfo && paymentInfo.orderId === orderId) {
+                        clearInterval(paymentInfo.intervalId);
+                        pendingPayments.delete(interaction.user.id);
+                        userAppliedCoupons.delete(interaction.user.id);
+                        updateOrderStatus(paymentInfo.orderId, 'cancelled');
+                        paymentInfo.message.delete().catch(console.error);
+                        interaction.user.send(`Đơn hàng \`${paymentInfo.orderId}\` đã tự động hủy do quá hạn.`).catch(() => {});
+                    }
+                }, PAYMENT_TIMEOUT_MS);
+            }
+            else if (customId.startsWith('pay_card_')) {
+                const accountId = customId.split('_')[2];
+                const cardModal = new ModalBuilder().setCustomId(`submit_card_${accountId}`).setTitle('Thanh toán bằng Thẻ Cào');
+                const cardTypeInput = new TextInputBuilder().setCustomId('card_type').setLabel("Nhà mạng (Viettel, Vinaphone, Mobifone)").setStyle(TextInputStyle.Short).setRequired(true);
+                const serialInput = new TextInputBuilder().setCustomId('card_serial').setLabel("Số Seri").setStyle(TextInputStyle.Short).setRequired(true);
+                const pinInput = new TextInputBuilder().setCustomId('card_pin').setLabel("Mã thẻ").setStyle(TextInputStyle.Short).setRequired(true);
+                cardModal.addComponents(new ActionRowBuilder().addComponents(cardTypeInput), new ActionRowBuilder().addComponents(serialInput), new ActionRowBuilder().addComponents(pinInput));
+                await interaction.showModal(cardModal);
             }
         }
-    }
-    // 4. Xử lý Menu Lựa Chọn
-    else if (interaction.isStringSelectMenu()) {
-        const customId = interaction.customId;
-        if (customId === 'select_shop_category') {
-            await interaction.deferUpdate();
-            const selectedCategory = interaction.values[0];
-            const accounts = getAccountsByCategory(selectedCategory);
-            if (accounts.length === 0) {
-                return interaction.editReply({ content: `Hiện không có tài khoản nào thuộc loại **${selectedCategory}**.`, components: [] });
+        else if (interaction.isModalSubmit()) {
+            if (interaction.customId.startsWith('add_account_modal_')) {
+                const category = interaction.customId.split('_')[3];
+                if (!hasAdminPermission(interaction)) return;
+                await interaction.deferReply({ ephemeral: true });
+                try {
+                    const name = interaction.fields.getTextInputValue('name');
+                    const price = parseInt(interaction.fields.getTextInputValue('price'));
+                    const description = interaction.fields.getTextInputValue('description');
+                    const imageUrlsText = interaction.fields.getTextInputValue('imageUrls') || '';
+                    const credentialsText = interaction.fields.getTextInputValue('credentials');
+                    const [username, password] = credentialsText.split('\n').map(line => line.trim()).filter(line => line);
+                    if (!username || !password) { await interaction.editReply({ content: 'Vui lòng nhập Tên đăng nhập và Mật khẩu trên hai dòng riêng biệt.' }); return; }
+                    const imageUrls = imageUrlsText.split('\n').map(url => url.trim()).filter(url => url);
+                    const imageUrlsJson = JSON.stringify(imageUrls);
+                    if (isNaN(price)) { await interaction.editReply('Giá tiền phải là một con số.'); return; }
+                    addAccount(name, price, description, imageUrlsJson, category, toBuffer(encrypt(username)), toBuffer(encrypt(password)));
+                    await interaction.editReply({ content: `✅ Đã thêm tài khoản **${category}** thành công!` });
+                } catch (error) {
+                    console.error('Lỗi khi thêm tài khoản:', error);
+                    await interaction.editReply({ content: '❌ Có lỗi xảy ra khi thêm tài khoản.' });
+                }
             }
-            const shopPage = createShopPage(accounts[0], 0, accounts.length, selectedCategory);
-            await interaction.editReply(shopPage);
+            else if (interaction.customId.startsWith('submit_card_')) {
+                await interaction.deferReply({ ephemeral: true });
+                const accountId = interaction.customId.split('_')[2];
+                const account = getAccountById(accountId);
+                if (!account || account.status !== 'available') return interaction.editReply('Tài khoản này đã được bán.');
+                const cardType = interaction.fields.getTextInputValue('card_type');
+                const serial = interaction.fields.getTextInputValue('card_serial');
+                const pin = interaction.fields.getTextInputValue('card_pin');
+                await interaction.editReply(`Đang xử lý thẻ **${cardType}**...`);
+                setTimeout(async () => {
+                    const isSuccess = true;
+                    if (isSuccess) {
+                        const orderId = `CARD${Date.now()}`;
+                        createOrder(orderId, interaction.user.id, account.id, account.price, 'card', null);
+                        updateOrderStatus(orderId, 'paid');
+                        updateAccountStatus(account.id, 'sold');
+                        const user = decrypt(fromBuffer(account.username)), pass = decrypt(fromBuffer(account.password));
+                        const successEmbed = new EmbedBuilder().setTitle('✅ Giao dịch thành công!').setDescription(`Cảm ơn bạn đã mua **${account.name}**. Dưới đây là thông tin đăng nhập:`).addFields({ name: 'Tên đăng nhập', value: `\`${user}\`` }, { name: 'Mật khẩu', value: `\`${pass}\`` }).setColor(0x2ECC71);
+                        try {
+                            await interaction.user.send({ embeds: [successEmbed] });
+                            await interaction.editReply('Thanh toán thành công! Vui lòng kiểm tra tin nhắn riêng.');
+                        } catch (e) { await interaction.editReply('Thanh toán thành công nhưng không thể gửi tin nhắn riêng.'); }
+                    }
+                }, 5000);
+            }
+            else if (interaction.customId.startsWith('submit_coupon_')) {
+                await interaction.deferUpdate();
+                const accountId = interaction.customId.split('_')[2];
+                const code = interaction.fields.getTextInputValue('coupon_code');
+                const coupon = getCoupon(code);
+                const account = getAccountById(accountId);
+                if (!coupon || coupon.uses_left <= 0) return interaction.followUp({ content: 'Mã giảm giá không hợp lệ hoặc đã hết lượt.', ephemeral: true });
+                userAppliedCoupons.set(interaction.user.id, coupon);
+                let finalPrice = account.price, discountAmount = 0;
+                if (coupon.discount_type === 'percentage') {
+                    discountAmount = Math.floor(account.price * (coupon.discount_value / 100));
+                    finalPrice -= discountAmount;
+                } else {
+                    discountAmount = coupon.discount_value;
+                    finalPrice -= discountAmount;
+                }
+                const updatedEmbed = EmbedBuilder.from(interaction.message.embeds[0]).setFields({ name: 'Giá gốc', value: `~~${account.price.toLocaleString('vi-VN')} VNĐ~~` }, { name: 'Giảm giá', value: `- ${discountAmount.toLocaleString('vi-VN')} VNĐ` }, { name: 'Giá cuối cùng', value: `**${Math.max(0, finalPrice).toLocaleString('vi-VN')} VNĐ**` }).setColor(0x2ECC71);
+                const newComponents = interaction.message.components.map(row => {
+                    const newRow = new ActionRowBuilder();
+                    row.components.forEach(button => {
+                        const newButton = ButtonBuilder.from(button);
+                        if (button.customId.startsWith('apply_coupon')) newButton.setDisabled(true).setLabel(`Đã áp dụng: ${coupon.code}`).setStyle(ButtonStyle.Secondary);
+                        newRow.addComponents(newButton);
+                    });
+                    return newRow;
+                });
+                await interaction.editReply({ embeds: [updatedEmbed], components: newComponents });
+            }
         }
-        else if (customId === 'select_account_to_manage') {
-            if (!hasAdminPermission(interaction)) { return interaction.reply({ content: 'Bạn không có quyền.', ephemeral: true });}
-            await interaction.deferUpdate();
-            const accountId = interaction.values[0];
-            const account = getAccountById(accountId);
-            if (!account) { await interaction.editReply({ content: 'Không tìm thấy tài khoản.', components: [] }); return; }
-            const embed = new EmbedBuilder().setTitle(`Quản lý: ${account.name}`).addFields({ name: 'ID', value: account.id.toString(), inline: true }, { name: 'Giá', value: `${account.price.toLocaleString('vi-VN')} VNĐ`, inline: true }, { name: 'Trạng thái', value: account.status, inline: true });
-            const confirmButton = new ButtonBuilder().setCustomId(`confirm_delete_${account.id}`).setLabel("Xác Nhận Xóa").setStyle(ButtonStyle.Danger);
-            const cancelButton = new ButtonBuilder().setCustomId('cancel_delete').setLabel("Hủy").setStyle(ButtonStyle.Secondary);
-            await interaction.editReply({ content: `Bạn có chắc chắn muốn xóa tài khoản này không?`, embeds: [embed], components: [new ActionRowBuilder().addComponents(confirmButton, cancelButton)] });
+        else if (interaction.isStringSelectMenu()) {
+            const customId = interaction.customId;
+            if (customId === 'select_shop_category') {
+                await interaction.deferUpdate();
+                const selectedCategory = interaction.values[0];
+                const accounts = getAccountsByCategory(selectedCategory);
+                if (accounts.length === 0) return interaction.editReply({ content: `Hiện không có tài khoản nào thuộc loại **${selectedCategory}**.`, components: [] });
+                const shopPage = createShopPage(accounts[0], 0, accounts.length, selectedCategory);
+                await interaction.editReply(shopPage);
+            }
+            else if (customId === 'select_account_to_manage') {
+                if (!hasAdminPermission(interaction)) return;
+                await interaction.deferUpdate();
+                const accountId = interaction.values[0];
+                const account = getAccountById(accountId);
+                if (!account) { await interaction.editReply({ content: 'Không tìm thấy tài khoản.', components: [] }); return; }
+                const embed = new EmbedBuilder().setTitle(`Quản lý: ${account.name}`).addFields({ name: 'ID', value: account.id.toString(), inline: true }, { name: 'Giá', value: `${account.price.toLocaleString('vi-VN')} VNĐ`, inline: true }, { name: 'Trạng thái', value: account.status, inline: true });
+                const confirmButton = new ButtonBuilder().setCustomId(`confirm_delete_${account.id}`).setLabel("Xác Nhận Xóa").setStyle(ButtonStyle.Danger);
+                const cancelButton = new ButtonBuilder().setCustomId('cancel_delete').setLabel("Hủy").setStyle(ButtonStyle.Secondary);
+                await interaction.editReply({ content: `Bạn có chắc chắn muốn xóa tài khoản này không?`, embeds: [embed], components: [new ActionRowBuilder().addComponents(confirmButton, cancelButton)] });
+            }
+        }
+    } catch (error) {
+        console.error("Unhandled Interaction Error:", error);
+        if (interaction.replied || interaction.deferred) {
+            await interaction.followUp({ content: 'Đã có lỗi không mong muốn xảy ra!', ephemeral: true }).catch(console.error);
+        } else {
+            await interaction.reply({ content: 'Đã có lỗi không mong muốn xảy ra!', ephemeral: true }).catch(console.error);
         }
     }
 });
