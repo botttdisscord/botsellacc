@@ -1,7 +1,6 @@
-require('dotenv').config(); // Tải biến môi trường ngay lập tức
+require('dotenv').config();
 const crypto = require('crypto');
 
-// Lấy khóa mã hóa từ biến môi trường.
 const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY;
 const IV_LENGTH = 16;
 
