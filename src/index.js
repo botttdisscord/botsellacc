@@ -2,7 +2,7 @@ require('dotenv').config();
 const fs = require('node:fs');
 const path = require('node:path');
 const { Client, Collection, Events, GatewayIntentBits, ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder, StringSelectMenuBuilder, EmbedBuilder, ButtonBuilder, ButtonStyle, PermissionsBitField } = require('discord.js');
-const keepAlive = require('../keep-alive.js');
+// const keepAlive = require('../keep-alive.js'); // ĐÃ XÓA
 const { addAccount, getAllAccounts, getAccountById, deleteAccountById, createOrder, findPendingOrderByUser, updateOrderStatus, updateAccountStatus, getSoldOrders, calculateTotalRevenue, getAccountsByCategory, addCoupon, getCoupon, useCoupon, getAllCoupons } = require('./utils/database');
 const { encrypt, decrypt, toBuffer, fromBuffer } = require('./utils/encryption');
 const { getRecentTransactions } = require('./utils/casso.js');
@@ -37,13 +37,7 @@ function hasAdminPermission(interaction) {
 client.once(Events.ClientReady, c => console.log(`✅ Ready! Logged in as ${c.user.tag}`));
 
 function createShopPage(account, pageIndex, totalPages, category) {
-    const shopEmbed = new EmbedBuilder()
-        .setTitle(account.name)
-        .setDescription(account.description || 'Không có mô tả cho sản phẩm này.')
-        .setColor(0x3498DB)
-        .addFields({ name: 'Giá bán', value: `${account.price.toLocaleString('vi-VN')} VNĐ` })
-        .setFooter({ text: `Sản phẩm ${pageIndex + 1} / ${totalPages} | ID: ${account.id}` });
-    
+    const shopEmbed = new EmbedBuilder().setTitle(account.name).setDescription(account.description || 'Không có mô tả cho sản phẩm này.').setColor(0x3498DB).addFields({ name: 'Giá bán', value: `${account.price.toLocaleString('vi-VN')} VNĐ` }).setFooter({ text: `Sản phẩm ${pageIndex + 1} / ${totalPages} | ID: ${account.id}` });
     let images = [];
     if (account.image_urls) {
         try {
@@ -51,18 +45,14 @@ function createShopPage(account, pageIndex, totalPages, category) {
             if (images.length > 0) shopEmbed.setImage(images[0]);
         } catch (e) { console.error(`Lỗi JSON image_urls cho account ID ${account.id}:`, e); }
     }
-
     const navigationRow = new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId(`shop_nav_${category}_prev_${pageIndex}`).setLabel('Trước').setStyle(ButtonStyle.Primary).setDisabled(pageIndex === 0),
         new ButtonBuilder().setCustomId(`shop_nav_${category}_next_${pageIndex}`).setLabel('Sau').setStyle(ButtonStyle.Primary).setDisabled(pageIndex >= totalPages - 1)
     );
-    const actionRow = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(`buy_now_${account.id}`).setLabel('Mua Ngay').setStyle(ButtonStyle.Success).setEmoji('💳')
-    );
+    const actionRow = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(`buy_now_${account.id}`).setLabel('Mua Ngay').setStyle(ButtonStyle.Success).setEmoji('💳'));
     if (images.length > 1) {
         actionRow.addComponents(new ButtonBuilder().setCustomId(`view_images_${account.id}_0`).setLabel('Xem Ảnh').setStyle(ButtonStyle.Secondary).setEmoji('🖼️'));
     }
-
     return { embeds: [shopEmbed], components: [navigationRow, actionRow] };
 }
 
@@ -82,7 +72,6 @@ client.on(Events.InteractionCreate, async interaction => {
             if (isAdminInteraction && !hasAdminPermission(interaction)) {
                 return interaction.reply({ content: 'Bạn không có quyền.', ephemeral: true });
             }
-
             if (customId === 'admin_add_account') {
                 const embed = new EmbedBuilder().setTitle('Chọn Loại Tài Khoản').setDescription('Vui lòng chọn loại tài khoản bạn muốn thêm.').setColor(0x5865F2);
                 const dropmailButton = new ButtonBuilder().setCustomId('admin_add_category_DROPMAIL').setLabel('ACC DROPMAIL').setStyle(ButtonStyle.Success);
@@ -124,10 +113,7 @@ client.on(Events.InteractionCreate, async interaction => {
                 await interaction.editReply({ embeds: [embed] });
             }
             else if (customId === 'admin_manage_coupons') {
-                const row = new ActionRowBuilder().addComponents(
-                    new ButtonBuilder().setCustomId('admin_create_coupon').setLabel('Tạo Coupon Mới').setStyle(ButtonStyle.Success),
-                    new ButtonBuilder().setCustomId('admin_list_coupons').setLabel('Xem Tất Cả Coupon').setStyle(ButtonStyle.Secondary)
-                );
+                const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('admin_create_coupon').setLabel('Tạo Coupon Mới').setStyle(ButtonStyle.Success), new ButtonBuilder().setCustomId('admin_list_coupons').setLabel('Xem Tất Cả Coupon').setStyle(ButtonStyle.Secondary));
                 await interaction.reply({ content: 'Vui lòng chọn một hành động:', components: [row], ephemeral: true });
             }
             else if (customId === 'admin_create_coupon') {
@@ -204,26 +190,18 @@ client.on(Events.InteractionCreate, async interaction => {
                 const accountId = customId.split('_')[2];
                 const account = getAccountById(accountId);
                 if (!account || account.status !== 'available') return interaction.followUp({ content: 'Tài khoản này đã được bán.', ephemeral: true });
-
                 const appliedCoupon = userAppliedCoupons.get(interaction.user.id);
                 let finalPrice = account.price;
                 if (appliedCoupon) {
-                    if (appliedCoupon.discount_type === 'percentage') {
-                        finalPrice -= Math.floor(account.price * (appliedCoupon.discount_value / 100));
-                    } else {
-                        finalPrice -= appliedCoupon.discount_value;
-                    }
-                    finalPrice = Math.max(0, finalPrice); // Đảm bảo giá không âm
+                    if (appliedCoupon.discount_type === 'percentage') { finalPrice -= Math.floor(account.price * (appliedCoupon.discount_value / 100)); } else { finalPrice -= appliedCoupon.discount_value; }
+                    finalPrice = Math.max(0, finalPrice);
                 }
-                
                 const orderId = `VALO${Date.now()}`;
                 createOrder(orderId, interaction.user.id, account.id, finalPrice, 'bank', appliedCoupon?.code);
-                
                 const bankId = process.env.BANK_ID, accountNo = process.env.ACCOUNT_NO, accountName = process.env.ACCOUNT_NAME;
                 if (!bankId || !accountNo || !accountName) return interaction.followUp({ content: "Lỗi: Hệ thống thanh toán chưa được cấu hình.", ephemeral: true });
                 const vietQR_URL = `https://img.vietqr.io/image/${bankId}-${accountNo}-compact.png?amount=${finalPrice}&addInfo=${encodeURIComponent(orderId)}&accountName=${encodeURIComponent(accountName)}`;
                 const paymentEmbed = new EmbedBuilder().setTitle(`Đơn Hàng: ${account.name}`).setDescription(`Vui lòng thanh toán bằng cách quét mã QR.\n\n**NỘI DUNG CHUYỂN KHOẢN BẮT BUỘC:**`).addFields({ name: 'Nội dung', value: `\`${orderId}\`` }, { name: 'Số tiền', value: `\`${finalPrice.toLocaleString('vi-VN')} VNĐ\`` }).setImage(vietQR_URL).setColor(0xFFA500).setFooter({ text: 'Bạn có 10 phút để thanh toán.' });
-                
                 let paymentMessage;
                 try {
                     paymentMessage = await interaction.user.send({ embeds: [paymentEmbed] });
@@ -233,7 +211,6 @@ client.on(Events.InteractionCreate, async interaction => {
                     await interaction.followUp({ content: 'Lỗi: Không thể gửi tin nhắn riêng cho bạn.', ephemeral: true });
                     updateOrderStatus(orderId, 'cancelled'); return;
                 }
-                
                 const checkInterval = setInterval(async () => {
                     const transactions = await getRecentTransactions();
                     const paidTx = transactions.find(tx => tx.amount === finalPrice && tx.description.includes(orderId));
@@ -271,6 +248,13 @@ client.on(Events.InteractionCreate, async interaction => {
                 const pinInput = new TextInputBuilder().setCustomId('card_pin').setLabel("Mã thẻ").setStyle(TextInputStyle.Short).setRequired(true);
                 cardModal.addComponents(new ActionRowBuilder().addComponents(cardTypeInput), new ActionRowBuilder().addComponents(serialInput), new ActionRowBuilder().addComponents(pinInput));
                 await interaction.showModal(cardModal);
+            }
+            else if (customId.startsWith('apply_coupon_')) {
+                const accountId = customId.split('_')[2];
+                const modal = new ModalBuilder().setCustomId(`submit_coupon_${accountId}`).setTitle('Áp Dụng Mã Giảm Giá');
+                const codeInput = new TextInputBuilder().setCustomId('coupon_code').setLabel("Nhập mã giảm giá của bạn").setStyle(TextInputStyle.Short).setRequired(true);
+                modal.addComponents(new ActionRowBuilder().addComponents(codeInput));
+                await interaction.showModal(modal);
             }
         }
         else if (interaction.isModalSubmit()) {
@@ -382,5 +366,5 @@ client.on(Events.InteractionCreate, async interaction => {
     }
 });
 
-keepAlive();
+// keepAlive(); // Không cần thiết trên VPS
 client.login(process.env.DISCORD_TOKEN);
