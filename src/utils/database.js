@@ -23,8 +23,11 @@ function initializeDatabase() {
 
     const createCouponsTable = `
     CREATE TABLE IF NOT EXISTS coupons (
-        code TEXT PRIMARY KEY, discount_type TEXT NOT NULL, discount_value INTEGER NOT NULL,
-        uses_left INTEGER NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        code TEXT PRIMARY KEY,
+        discount_percentage INTEGER NOT NULL,
+        uses_left INTEGER NOT NULL,
+        expiry_date DATETIME,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );`;
     
     db.exec(createAccountsTable);
@@ -38,18 +41,22 @@ function addAccount(name, price, description, imageUrlsJson, category, encrypted
     const stmt = db.prepare(`INSERT INTO accounts (name, price, description, image_urls, category, username, password) VALUES (?, ?, ?, ?, ?, ?, ?)`);
     stmt.run(name, price, description, imageUrlsJson, category, encryptedUsername, encryptedPassword);
 }
+
 function getAllAccounts() {
     const stmt = db.prepare("SELECT id, name, price, status, image_urls, category, description FROM accounts WHERE status = 'available' ORDER BY added_at DESC");
     return stmt.all();
 }
+
 function getAccountsByCategory(category) {
     const stmt = db.prepare("SELECT id, name, price, status, image_urls, category, description FROM accounts WHERE status = 'available' AND category = ? ORDER BY added_at DESC");
     return stmt.all(category);
 }
+
 function getAccountById(id) {
     const stmt = db.prepare('SELECT * FROM accounts WHERE id = ?');
     return stmt.get(id);
 }
+
 const deleteAccountTransaction = db.transaction((id) => {
     const deleteOrdersStmt = db.prepare('DELETE FROM orders WHERE account_id = ?');
     deleteOrdersStmt.run(id);
@@ -57,6 +64,7 @@ const deleteAccountTransaction = db.transaction((id) => {
     const result = deleteAccountStmt.run(id);
     return result.changes > 0;
 });
+
 function deleteAccountById(id) {
     try {
         return deleteAccountTransaction(id);
@@ -65,22 +73,27 @@ function deleteAccountById(id) {
         return false;
     }
 }
+
 function updateAccountStatus(accountId, status) {
     const stmt = db.prepare('UPDATE accounts SET status = ? WHERE id = ?');
     stmt.run(status, accountId);
 }
+
 function createOrder(orderId, buyerId, accountId, amount, paymentMethod, couponCode) {
     const stmt = db.prepare('INSERT INTO orders (id, buyer_id, account_id, amount, status, payment_method, coupon_code) VALUES (?, ?, ?, ?, ?, ?, ?)');
     stmt.run(orderId, buyerId, accountId, amount, 'pending', paymentMethod, couponCode);
 }
+
 function findPendingOrderByUser(buyerId) {
     const stmt = db.prepare("SELECT * FROM orders WHERE buyer_id = ? AND status = 'pending'");
     return stmt.get(buyerId);
 }
+
 function updateOrderStatus(orderId, status) {
     const stmt = db.prepare('UPDATE orders SET status = ? WHERE id = ?');
     stmt.run(status, orderId);
 }
+
 function getSoldOrders() {
     const stmt = db.prepare(`
         SELECT o.id, o.buyer_id, o.amount, o.created_at, o.payment_method, o.coupon_code, a.name as account_name
@@ -89,11 +102,13 @@ function getSoldOrders() {
     `);
     return stmt.all();
 }
+
 function calculateTotalRevenue() {
     const stmt = db.prepare("SELECT SUM(amount) as total FROM orders WHERE status = 'paid'");
     const result = stmt.get();
     return result.total || 0;
 }
+
 function getPurchaseHistory(buyerId) {
     const stmt = db.prepare(`
         SELECT a.name, a.username, a.password
@@ -102,22 +117,27 @@ function getPurchaseHistory(buyerId) {
     `);
     return stmt.all(buyerId);
 }
-function addCoupon(code, type, value, uses) {
-    const stmt = db.prepare('INSERT INTO coupons (code, discount_type, discount_value, uses_left) VALUES (?, ?, ?, ?)');
-    stmt.run(code.toUpperCase(), type, value, uses);
+
+function addCoupon(code, discountPercentage, uses, expiryDate) {
+    const stmt = db.prepare('INSERT INTO coupons (code, discount_percentage, uses_left, expiry_date) VALUES (?, ?, ?, ?)');
+    stmt.run(code.toUpperCase(), discountPercentage, uses, expiryDate);
 }
+
 function getCoupon(code) {
     const stmt = db.prepare('SELECT * FROM coupons WHERE code = ?');
     return stmt.get(code.toUpperCase());
 }
+
 function useCoupon(code) {
-    const stmt = db.prepare('UPDATE coupons SET uses_left = uses_left - 1 WHERE code = ? AND uses_left > 0');
+    const stmt = db.prepare('UPDATE coupons SET uses_left = uses_left - 1 WHERE code = ? AND uses_left != -1');
     stmt.run(code.toUpperCase());
 }
+
 function getAllCoupons() {
     const stmt = db.prepare('SELECT * FROM coupons ORDER BY created_at DESC');
     return stmt.all();
 }
+
 module.exports = {
     addAccount, getAllAccounts, getAccountById, deleteAccountById, updateAccountStatus,
     createOrder, findPendingOrderByUser, updateOrderStatus,
