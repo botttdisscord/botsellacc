@@ -5,6 +5,7 @@ const { Client, Collection, Events, GatewayIntentBits, ModalBuilder, TextInputBu
 const { addAccount, getAllAccounts, getAccountById, deleteAccountById, createOrder, findPendingOrderByUser, updateOrderStatus, updateAccountStatus, getSoldOrders, calculateTotalRevenue, getAccountsByCategory, addCoupon, getCoupon, useCoupon, getAllCoupons } = require('./utils/database');
 const { encrypt, decrypt, toBuffer, fromBuffer } = require('./utils/encryption');
 const { getRecentTransactions } = require('./utils/casso.js');
+const { chargeCard } = require('./utils/thesieure.js');
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 client.commands = new Collection();
@@ -68,9 +69,7 @@ client.on(Events.InteractionCreate, async interaction => {
         else if (interaction.isButton()) {
             const customId = interaction.customId;
             const isAdminInteraction = customId.startsWith('admin_');
-            if (isAdminInteraction && !hasAdminPermission(interaction)) {
-                return interaction.reply({ content: 'Bạn không có quyền.', ephemeral: true });
-            }
+            if (isAdminInteraction && !hasAdminPermission(interaction)) return interaction.reply({ content: 'Bạn không có quyền.', ephemeral: true });
             if (customId === 'admin_add_account') {
                 const embed = new EmbedBuilder().setTitle('Chọn Loại Tài Khoản').setDescription('Vui lòng chọn loại tài khoản bạn muốn thêm.').setColor(0x5865F2);
                 const dropmailButton = new ButtonBuilder().setCustomId('admin_add_category_DROPMAIL').setLabel('ACC DROPMAIL').setStyle(ButtonStyle.Success);
@@ -314,25 +313,26 @@ client.on(Events.InteractionCreate, async interaction => {
                 const accountId = interaction.customId.split('_')[2];
                 const account = getAccountById(accountId);
                 if (!account || account.status !== 'available') return interaction.editReply('Tài khoản này đã được bán.');
-                const cardType = interaction.fields.getTextInputValue('card_type');
+                const telco = interaction.fields.getTextInputValue('card_type').toUpperCase();
                 const serial = interaction.fields.getTextInputValue('card_serial');
                 const pin = interaction.fields.getTextInputValue('card_pin');
-                await interaction.editReply(`Đang xử lý thẻ **${cardType}**...`);
-                setTimeout(async () => {
-                    const isSuccess = true;
-                    if (isSuccess) {
-                        const orderId = `CARD${Date.now()}`;
-                        createOrder(orderId, interaction.user.id, account.id, account.price, 'card', null);
-                        updateOrderStatus(orderId, 'paid');
-                        updateAccountStatus(account.id, 'sold');
-                        const user = decrypt(fromBuffer(account.username)), pass = decrypt(fromBuffer(account.password));
-                        const successEmbed = new EmbedBuilder().setTitle('✅ Giao dịch thành công!').setDescription(`Cảm ơn bạn đã mua **${account.name}**. Dưới đây là thông tin đăng nhập:`).addFields({ name: 'Tên đăng nhập', value: `\`${user}\`` }, { name: 'Mật khẩu', value: `\`${pass}\`` }).setColor(0x2ECC71);
-                        try {
-                            await interaction.user.send({ embeds: [successEmbed] });
-                            await interaction.editReply('Thanh toán thành công! Vui lòng kiểm tra tin nhắn riêng.');
-                        } catch (e) { await interaction.editReply('Thanh toán thành công nhưng không thể gửi tin nhắn riêng.'); }
-                    }
-                }, 5000);
+                await interaction.editReply(`Đang gửi thẻ **${telco}** đến cổng thanh toán... Vui lòng chờ.`);
+                const requestId = `ACC${Date.now()}`;
+                const result = await chargeCard(telco, pin, serial, account.price, requestId);
+                if (result && result.status === 1) {
+                    const orderId = `CARD_${requestId}`;
+                    createOrder(orderId, interaction.user.id, account.id, account.price, 'card', null);
+                    updateOrderStatus(orderId, 'paid');
+                    updateAccountStatus(account.id, 'sold');
+                    const user = decrypt(fromBuffer(account.username)), pass = decrypt(fromBuffer(account.password));
+                    const successEmbed = new EmbedBuilder().setTitle('✅ Giao dịch thành công!').setDescription(`Cảm ơn bạn đã mua **${account.name}**. Dưới đây là thông tin đăng nhập:`).addFields({ name: 'Tên đăng nhập', value: `\`${user}\`` }, { name: 'Mật khẩu', value: `\`${pass}\`` }).setColor(0x2ECC71);
+                    try {
+                        await interaction.user.send({ embeds: [successEmbed] });
+                        await interaction.editReply('Thanh toán thành công! Vui lòng kiểm tra tin nhắn riêng.');
+                    } catch (e) { await interaction.editReply('Thanh toán thành công nhưng không thể gửi tin nhắn riêng.'); }
+                } else {
+                    await interaction.editReply(`Thanh toán thất bại. Lý do: **${result.message || 'Có lỗi xảy ra'}**`);
+                }
             }
             else if (interaction.customId.startsWith('submit_coupon_')) {
                 await interaction.deferUpdate();
@@ -343,38 +343,26 @@ client.on(Events.InteractionCreate, async interaction => {
                 if (!coupon || coupon.uses_left === 0) return interaction.followUp({ content: 'Mã giảm giá không hợp lệ hoặc đã hết lượt.', ephemeral: true });
                 if (coupon.expiry_date && new Date(coupon.expiry_date) < new Date()) return interaction.followUp({ content: 'Mã giảm giá đã hết hạn.', ephemeral: true });
                 
-                let finalPrice = account.price;
-                let discountAmount = 0;
                 if (coupon.discount_percentage >= 100) {
-                    finalPrice = 0;
-                    discountAmount = account.price;
-                } else {
-                    discountAmount = Math.floor(account.price * (coupon.discount_percentage / 100));
-                    finalPrice = account.price - discountAmount;
-                }
-
-                if (finalPrice <= 0) {
                     await interaction.editReply({ content: `Đang xử lý tài khoản miễn phí với coupon **${coupon.code}**...`, components: [], embeds: [] });
-                    
                     const orderId = `COUPON${Date.now()}`;
                     createOrder(orderId, interaction.user.id, account.id, 0, 'coupon', coupon.code);
                     updateOrderStatus(orderId, 'paid');
                     updateAccountStatus(account.id, 'sold');
                     useCoupon(coupon.code);
-
                     const user = decrypt(fromBuffer(account.username));
                     const pass = decrypt(fromBuffer(account.password));
                     const successEmbed = new EmbedBuilder().setTitle('✅ Nhận Tài Khoản Thành Công!').setDescription(`Bạn đã sử dụng coupon và nhận thành công **${account.name}**. Dưới đây là thông tin đăng nhập:`).addFields({ name: 'Tên đăng nhập', value: `\`${user}\`` }, { name: 'Mật khẩu', value: `\`${pass}\`` }).setColor(0x2ECC71);
-                    
                     try {
                         await interaction.user.send({ embeds: [successEmbed] });
                         await interaction.followUp({ content: 'Nhận tài khoản thành công! Vui lòng kiểm tra tin nhắn riêng.', ephemeral: true });
-                    } catch (e) {
-                        await interaction.followUp({ content: 'Nhận tài khoản thành công nhưng không thể gửi tin nhắn riêng. Vui lòng liên hệ admin.', ephemeral: true });
-                    }
+                    } catch (e) { await interaction.followUp({ content: 'Nhận tài khoản thành công nhưng không thể gửi tin nhắn riêng. Vui lòng liên hệ admin.', ephemeral: true }); }
                 } else {
                     userAppliedCoupons.set(interaction.user.id, coupon);
-                    const updatedEmbed = EmbedBuilder.from(interaction.message.embeds[0]).setFields({ name: 'Giá gốc', value: `~~${account.price.toLocaleString('vi-VN')} VNĐ~~` }, { name: 'Giảm giá', value: `- ${discountAmount.toLocaleString('vi-VN')} VNĐ` }, { name: 'Giá cuối cùng', value: `**${finalPrice.toLocaleString('vi-VN')} VNĐ**` }).setColor(0x2ECC71);
+                    let finalPrice = account.price, discountAmount = 0;
+                    discountAmount = Math.floor(account.price * (coupon.discount_percentage / 100));
+                    finalPrice = account.price - discountAmount;
+                    const updatedEmbed = EmbedBuilder.from(interaction.message.embeds[0]).setFields({ name: 'Giá gốc', value: `~~${account.price.toLocaleString('vi-VN')} VNĐ~~` }, { name: 'Giảm giá', value: `- ${discountAmount.toLocaleString('vi-VN')} VNĐ` }, { name: 'Giá cuối cùng', value: `**${Math.max(0, finalPrice).toLocaleString('vi-VN')} VNĐ**` }).setColor(0x2ECC71);
                     const newComponents = interaction.message.components.map(row => {
                         const newRow = new ActionRowBuilder();
                         row.components.forEach(button => {
