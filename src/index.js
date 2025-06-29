@@ -68,7 +68,9 @@ client.on(Events.InteractionCreate, async interaction => {
         else if (interaction.isButton()) {
             const customId = interaction.customId;
             const isAdminInteraction = customId.startsWith('admin_');
-            if (isAdminInteraction && !hasAdminPermission(interaction)) return interaction.reply({ content: 'Bạn không có quyền.', ephemeral: true });
+            if (isAdminInteraction && !hasAdminPermission(interaction)) {
+                return interaction.reply({ content: 'Bạn không có quyền.', ephemeral: true });
+            }
             if (customId === 'admin_add_account') {
                 const embed = new EmbedBuilder().setTitle('Chọn Loại Tài Khoản').setDescription('Vui lòng chọn loại tài khoản bạn muốn thêm.').setColor(0x5865F2);
                 const dropmailButton = new ButtonBuilder().setCustomId('admin_add_category_DROPMAIL').setLabel('ACC DROPMAIL').setStyle(ButtonStyle.Success);
@@ -340,21 +342,50 @@ client.on(Events.InteractionCreate, async interaction => {
                 const account = getAccountById(accountId);
                 if (!coupon || coupon.uses_left === 0) return interaction.followUp({ content: 'Mã giảm giá không hợp lệ hoặc đã hết lượt.', ephemeral: true });
                 if (coupon.expiry_date && new Date(coupon.expiry_date) < new Date()) return interaction.followUp({ content: 'Mã giảm giá đã hết hạn.', ephemeral: true });
-                userAppliedCoupons.set(interaction.user.id, coupon);
-                let finalPrice = account.price, discountAmount = 0;
-                discountAmount = Math.floor(account.price * (coupon.discount_percentage / 100));
-                finalPrice = account.price - discountAmount;
-                const updatedEmbed = EmbedBuilder.from(interaction.message.embeds[0]).setFields({ name: 'Giá gốc', value: `~~${account.price.toLocaleString('vi-VN')} VNĐ~~` }, { name: 'Giảm giá', value: `- ${discountAmount.toLocaleString('vi-VN')} VNĐ` }, { name: 'Giá cuối cùng', value: `**${Math.max(0, finalPrice).toLocaleString('vi-VN')} VNĐ**` }).setColor(0x2ECC71);
-                const newComponents = interaction.message.components.map(row => {
-                    const newRow = new ActionRowBuilder();
-                    row.components.forEach(button => {
-                        const newButton = ButtonBuilder.from(button);
-                        if (button.customId.startsWith('apply_coupon')) newButton.setDisabled(true).setLabel(`Đã áp dụng: ${coupon.code}`).setStyle(ButtonStyle.Secondary);
-                        newRow.addComponents(newButton);
+                
+                let finalPrice = account.price;
+                let discountAmount = 0;
+                if (coupon.discount_percentage >= 100) {
+                    finalPrice = 0;
+                    discountAmount = account.price;
+                } else {
+                    discountAmount = Math.floor(account.price * (coupon.discount_percentage / 100));
+                    finalPrice = account.price - discountAmount;
+                }
+
+                if (finalPrice <= 0) {
+                    await interaction.editReply({ content: `Đang xử lý tài khoản miễn phí với coupon **${coupon.code}**...`, components: [], embeds: [] });
+                    
+                    const orderId = `COUPON${Date.now()}`;
+                    createOrder(orderId, interaction.user.id, account.id, 0, 'coupon', coupon.code);
+                    updateOrderStatus(orderId, 'paid');
+                    updateAccountStatus(account.id, 'sold');
+                    useCoupon(coupon.code);
+
+                    const user = decrypt(fromBuffer(account.username));
+                    const pass = decrypt(fromBuffer(account.password));
+                    const successEmbed = new EmbedBuilder().setTitle('✅ Nhận Tài Khoản Thành Công!').setDescription(`Bạn đã sử dụng coupon và nhận thành công **${account.name}**. Dưới đây là thông tin đăng nhập:`).addFields({ name: 'Tên đăng nhập', value: `\`${user}\`` }, { name: 'Mật khẩu', value: `\`${pass}\`` }).setColor(0x2ECC71);
+                    
+                    try {
+                        await interaction.user.send({ embeds: [successEmbed] });
+                        await interaction.followUp({ content: 'Nhận tài khoản thành công! Vui lòng kiểm tra tin nhắn riêng.', ephemeral: true });
+                    } catch (e) {
+                        await interaction.followUp({ content: 'Nhận tài khoản thành công nhưng không thể gửi tin nhắn riêng. Vui lòng liên hệ admin.', ephemeral: true });
+                    }
+                } else {
+                    userAppliedCoupons.set(interaction.user.id, coupon);
+                    const updatedEmbed = EmbedBuilder.from(interaction.message.embeds[0]).setFields({ name: 'Giá gốc', value: `~~${account.price.toLocaleString('vi-VN')} VNĐ~~` }, { name: 'Giảm giá', value: `- ${discountAmount.toLocaleString('vi-VN')} VNĐ` }, { name: 'Giá cuối cùng', value: `**${finalPrice.toLocaleString('vi-VN')} VNĐ**` }).setColor(0x2ECC71);
+                    const newComponents = interaction.message.components.map(row => {
+                        const newRow = new ActionRowBuilder();
+                        row.components.forEach(button => {
+                            const newButton = ButtonBuilder.from(button);
+                            if (button.customId.startsWith('apply_coupon')) newButton.setDisabled(true).setLabel(`Đã áp dụng: ${coupon.code}`).setStyle(ButtonStyle.Secondary);
+                            newRow.addComponents(newButton);
+                        });
+                        return newRow;
                     });
-                    return newRow;
-                });
-                await interaction.editReply({ embeds: [updatedEmbed], components: newComponents });
+                    await interaction.editReply({ embeds: [updatedEmbed], components: newComponents });
+                }
             }
         }
         else if (interaction.isStringSelectMenu()) {
@@ -388,5 +419,5 @@ client.on(Events.InteractionCreate, async interaction => {
         }
     }
 });
- 
+
 client.login(process.env.DISCORD_TOKEN);
