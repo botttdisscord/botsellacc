@@ -1,10 +1,8 @@
 const axios = require('axios');
 const CASSO_API_KEY = process.env.CASSO_API_KEY;
-
 if (!CASSO_API_KEY) {
-    console.warn('[CẢNH BÁO] CASSO_API_KEY chưa được thiết lập. Bot sẽ không thể kiểm tra giao dịch.');
+    console.warn('[CẢNH BÁO] CASSO_API_KEY chưa được thiết lập.');
 }
-
 async function getRecentTransactions() {
     try {
         const response = await axios.get('https://oauth.casso.vn/v2/transactions', {
