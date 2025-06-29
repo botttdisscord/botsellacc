@@ -1,4 +1,6 @@
 require('dotenv').config();
+const fs = require('node:fs');
+const path = require('node:path');
 const { Client, Collection, Events, GatewayIntentBits, ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder, StringSelectMenuBuilder, EmbedBuilder, ButtonBuilder, ButtonStyle, PermissionsBitField } = require('discord.js');
 const { addAccount, getAllAccounts, getAccountById, deleteAccountById, createOrder, findPendingOrderByUser, updateOrderStatus, updateAccountStatus, getSoldOrders, calculateTotalRevenue, getAccountsByCategory, addCoupon, getCoupon, useCoupon, getAllCoupons } = require('./utils/database');
 const { encrypt, decrypt, toBuffer, fromBuffer } = require('./utils/encryption');
@@ -67,7 +69,6 @@ client.on(Events.InteractionCreate, async interaction => {
             const customId = interaction.customId;
             const isAdminInteraction = customId.startsWith('admin_');
             if (isAdminInteraction && !hasAdminPermission(interaction)) return interaction.reply({ content: 'Bạn không có quyền.', ephemeral: true });
-
             if (customId === 'admin_add_account') {
                 const embed = new EmbedBuilder().setTitle('Chọn Loại Tài Khoản').setDescription('Vui lòng chọn loại tài khoản bạn muốn thêm.').setColor(0x5865F2);
                 const dropmailButton = new ButtonBuilder().setCustomId('admin_add_category_DROPMAIL').setLabel('ACC DROPMAIL').setStyle(ButtonStyle.Success);
@@ -337,15 +338,12 @@ client.on(Events.InteractionCreate, async interaction => {
                 const code = interaction.fields.getTextInputValue('coupon_code');
                 const coupon = getCoupon(code);
                 const account = getAccountById(accountId);
-
                 if (!coupon || coupon.uses_left === 0) return interaction.followUp({ content: 'Mã giảm giá không hợp lệ hoặc đã hết lượt.', ephemeral: true });
                 if (coupon.expiry_date && new Date(coupon.expiry_date) < new Date()) return interaction.followUp({ content: 'Mã giảm giá đã hết hạn.', ephemeral: true });
-
                 userAppliedCoupons.set(interaction.user.id, coupon);
                 let finalPrice = account.price, discountAmount = 0;
                 discountAmount = Math.floor(account.price * (coupon.discount_percentage / 100));
                 finalPrice = account.price - discountAmount;
-
                 const updatedEmbed = EmbedBuilder.from(interaction.message.embeds[0]).setFields({ name: 'Giá gốc', value: `~~${account.price.toLocaleString('vi-VN')} VNĐ~~` }, { name: 'Giảm giá', value: `- ${discountAmount.toLocaleString('vi-VN')} VNĐ` }, { name: 'Giá cuối cùng', value: `**${Math.max(0, finalPrice).toLocaleString('vi-VN')} VNĐ**` }).setColor(0x2ECC71);
                 const newComponents = interaction.message.components.map(row => {
                     const newRow = new ActionRowBuilder();
@@ -390,6 +388,5 @@ client.on(Events.InteractionCreate, async interaction => {
         }
     }
 });
-
-// keepAlive(); // Không cần thiết trên VPS
+ 
 client.login(process.env.DISCORD_TOKEN);
