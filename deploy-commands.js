@@ -1,3 +1,4 @@
+require('dotenv').config();
 const { REST, Routes } = require('discord.js');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -5,6 +6,11 @@ const path = require('node:path');
 const BOT_TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 const GUILD_ID = process.env.GUILD_ID;
+
+if (!BOT_TOKEN || !CLIENT_ID || !GUILD_ID) {
+    console.error("Lỗi: Không tìm thấy DISCORD_TOKEN, CLIENT_ID, hoặc GUILD_ID. Vui lòng kiểm tra lại file .env của bạn.");
+    process.exit(1);
+}
 
 const commands = [];
 const foldersPath = path.join(__dirname, 'src/commands');
@@ -26,7 +32,7 @@ const rest = new REST().setToken(BOT_TOKEN);
 
 (async () => {
     try {
-        console.log(`Bắt đầu đăng ký ${commands.length} lệnh (/)`);
+        console.log(`Bắt đầu đăng ký ${commands.length} lệnh (/) lên Discord.`);
         const data = await rest.put(
             Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID),
             { body: commands },
