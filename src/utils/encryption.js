@@ -1,13 +1,10 @@
 require('dotenv').config();
 const crypto = require('crypto');
-
 const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY;
 const IV_LENGTH = 16;
-
 if (!ENCRYPTION_KEY || ENCRYPTION_KEY.length !== 32) {
     throw new Error('ENCRYPTION_KEY không hợp lệ. Vui lòng kiểm tra lại file .env và đảm bảo giá trị là một chuỗi 32 ký tự.');
 }
-
 function encrypt(text) {
     let iv = crypto.randomBytes(IV_LENGTH);
     let cipher = crypto.createCipheriv('aes-256-cbc', Buffer.from(ENCRYPTION_KEY), iv);
@@ -15,7 +12,6 @@ function encrypt(text) {
     encrypted = Buffer.concat([encrypted, cipher.final()]);
     return iv.toString('hex') + ':' + encrypted.toString('hex');
 }
-
 function decrypt(text) {
     let textParts = text.split(':');
     let iv = Buffer.from(textParts.shift(), 'hex');
@@ -25,8 +21,6 @@ function decrypt(text) {
     decrypted = Buffer.concat([decrypted, decipher.final()]);
     return decrypted.toString();
 }
-
 function toBuffer(hex) { return Buffer.from(hex, 'hex'); }
 function fromBuffer(buffer) { return buffer.toString('hex'); }
-
 module.exports = { encrypt, decrypt, toBuffer, fromBuffer };
