@@ -1,23 +1,16 @@
 const Database = require('better-sqlite3');
 const path = require('path');
-
-// *** THAY ĐỔI CHẨN ĐOÁN: Tạo DB trong thư mục tạm thời /tmp ***
-// const db = new Database(path.resolve(__dirname, '..', '..', 'database.sqlite'));
-const db = new Database('/tmp/database.sqlite');
-console.log("!!! DEBUG MODE: Đang cố gắng tạo database tại /tmp/database.sqlite");
-
+const db = new Database(path.resolve(__dirname, '..', '..', 'database.sqlite'));
 
 function initializeDatabase() {
     console.log('Initializing database...');
     db.pragma('foreign_keys = ON');
-    
     const createAccountsTable = `
     CREATE TABLE IF NOT EXISTS accounts (
         id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, price INTEGER NOT NULL, description TEXT,
         image_urls TEXT, category TEXT, username BLOB NOT NULL, password BLOB NOT NULL,
         status TEXT NOT NULL DEFAULT 'available', added_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );`;
-    
     const createOrdersTable = `
     CREATE TABLE IF NOT EXISTS orders (
         id TEXT PRIMARY KEY, buyer_id TEXT NOT NULL, account_id INTEGER,
@@ -25,13 +18,11 @@ function initializeDatabase() {
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
     );`;
-
     const createCouponsTable = `
     CREATE TABLE IF NOT EXISTS coupons (
         code TEXT PRIMARY KEY, discount_percentage INTEGER NOT NULL, uses_left INTEGER NOT NULL,
         expiry_date DATETIME, created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );`;
-    
     db.exec(createAccountsTable);
     db.exec(createOrdersTable);
     db.exec(createCouponsTable);
@@ -39,7 +30,6 @@ function initializeDatabase() {
 }
 initializeDatabase();
 
-// ... Toàn bộ các hàm còn lại của file database.js giữ nguyên ...
 function addAccount(name, price, description, imageUrlsJson, category, encryptedUsername, encryptedPassword) {
     const stmt = db.prepare(`INSERT INTO accounts (name, price, description, image_urls, category, username, password) VALUES (?, ?, ?, ?, ?, ?, ?)`);
     stmt.run(name, price, description, imageUrlsJson, category, encryptedUsername, encryptedPassword);
@@ -85,10 +75,8 @@ function updateOrderStatus(orderId, status) {
 function getSoldOrders() {
     const stmt = db.prepare(`
         SELECT o.id, o.buyer_id, o.amount, o.created_at, o.payment_method, o.coupon_code, a.name as account_name
-        FROM orders o
-        LEFT JOIN accounts a ON o.account_id = a.id
-        WHERE o.status = 'paid'
-        ORDER BY o.created_at DESC
+        FROM orders o LEFT JOIN accounts a ON o.account_id = a.id
+        WHERE o.status = 'paid' ORDER BY o.created_at DESC
     `);
     return stmt.all();
 }
@@ -100,10 +88,8 @@ function calculateTotalRevenue() {
 function getPurchaseHistory(buyerId) {
     const stmt = db.prepare(`
         SELECT a.name, a.username, a.password
-        FROM orders o
-        JOIN accounts a ON o.account_id = a.id
-        WHERE o.buyer_id = ? AND o.status = 'paid'
-        ORDER BY o.created_at DESC
+        FROM orders o JOIN accounts a ON o.account_id = a.id
+        WHERE o.buyer_id = ? AND o.status = 'paid' ORDER BY o.created_at DESC
     `);
     return stmt.all(buyerId);
 }
