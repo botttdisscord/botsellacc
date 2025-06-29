@@ -1,6 +1,6 @@
 const Database = require('better-sqlite3');
-const path_db = require('path');
-const db = new Database(path_db.resolve(__dirname, '..', '..', 'database.sqlite'));
+const path = require('path');
+const db = new Database(path.resolve(__dirname, '..', '..', 'database.sqlite'));
 
 function initializeDatabase() {
     console.log('Initializing database...');
