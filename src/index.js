@@ -1,8 +1,5 @@
 require('dotenv').config();
-const fs = require('node:fs');
-const path = require('node:path');
 const { Client, Collection, Events, GatewayIntentBits, ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder, StringSelectMenuBuilder, EmbedBuilder, ButtonBuilder, ButtonStyle, PermissionsBitField } = require('discord.js');
-// const keepAlive = require('../keep-alive.js'); // ĐÃ XÓA
 const { addAccount, getAllAccounts, getAccountById, deleteAccountById, createOrder, findPendingOrderByUser, updateOrderStatus, updateAccountStatus, getSoldOrders, calculateTotalRevenue, getAccountsByCategory, addCoupon, getCoupon, useCoupon, getAllCoupons } = require('./utils/database');
 const { encrypt, decrypt, toBuffer, fromBuffer } = require('./utils/encryption');
 const { getRecentTransactions } = require('./utils/casso.js');
@@ -69,9 +66,8 @@ client.on(Events.InteractionCreate, async interaction => {
         else if (interaction.isButton()) {
             const customId = interaction.customId;
             const isAdminInteraction = customId.startsWith('admin_');
-            if (isAdminInteraction && !hasAdminPermission(interaction)) {
-                return interaction.reply({ content: 'Bạn không có quyền.', ephemeral: true });
-            }
+            if (isAdminInteraction && !hasAdminPermission(interaction)) return interaction.reply({ content: 'Bạn không có quyền.', ephemeral: true });
+
             if (customId === 'admin_add_account') {
                 const embed = new EmbedBuilder().setTitle('Chọn Loại Tài Khoản').setDescription('Vui lòng chọn loại tài khoản bạn muốn thêm.').setColor(0x5865F2);
                 const dropmailButton = new ButtonBuilder().setCustomId('admin_add_category_DROPMAIL').setLabel('ACC DROPMAIL').setStyle(ButtonStyle.Success);
@@ -118,11 +114,11 @@ client.on(Events.InteractionCreate, async interaction => {
             }
             else if (customId === 'admin_create_coupon') {
                 const modal = new ModalBuilder().setCustomId('create_coupon_modal').setTitle('Tạo Mã Giảm Giá Mới');
-                const codeInput = new TextInputBuilder().setCustomId('coupon_code').setLabel("Mã coupon (VD: GIAMGIA10K)").setStyle(TextInputStyle.Short).setRequired(true);
-                const typeInput = new TextInputBuilder().setCustomId('coupon_type').setLabel("Loại giảm giá ('percentage' hoặc 'fixed')").setStyle(TextInputStyle.Short).setRequired(true);
-                const valueInput = new TextInputBuilder().setCustomId('coupon_value').setLabel("Giá trị (VD: 10 cho 10%, 10000 cho 10k)").setStyle(TextInputStyle.Short).setRequired(true);
-                const usesInput = new TextInputBuilder().setCustomId('coupon_uses').setLabel("Số lượt sử dụng").setStyle(TextInputStyle.Short).setRequired(true);
-                modal.addComponents(new ActionRowBuilder().addComponents(codeInput), new ActionRowBuilder().addComponents(typeInput), new ActionRowBuilder().addComponents(valueInput), new ActionRowBuilder().addComponents(usesInput));
+                const codeInput = new TextInputBuilder().setCustomId('coupon_code').setLabel("Mã coupon (VD: GIAMGIA10)").setStyle(TextInputStyle.Short).setRequired(true);
+                const discountInput = new TextInputBuilder().setCustomId('coupon_discount').setLabel("Phần trăm giảm giá (chỉ nhập số)").setStyle(TextInputStyle.Short).setRequired(true);
+                const usesInput = new TextInputBuilder().setCustomId('coupon_uses').setLabel("Số lượt dùng (1, 2, hoặc 'vohan' cho vô hạn)").setStyle(TextInputStyle.Short).setRequired(true);
+                const expiryInput = new TextInputBuilder().setCustomId('coupon_expiry').setLabel("Thời gian hiệu lực (VD: 7d, 24h, 30m)").setStyle(TextInputStyle.Short).setRequired(true);
+                modal.addComponents(new ActionRowBuilder().addComponents(codeInput), new ActionRowBuilder().addComponents(discountInput), new ActionRowBuilder().addComponents(usesInput), new ActionRowBuilder().addComponents(expiryInput));
                 await interaction.showModal(modal);
             }
             else if (customId === 'admin_list_coupons') {
@@ -131,7 +127,9 @@ client.on(Events.InteractionCreate, async interaction => {
                 if (coupons.length === 0) return interaction.editReply('Chưa có coupon nào được tạo.');
                 const embed = new EmbedBuilder().setTitle('Danh sách Mã Giảm Giá').setColor(0x9B59B6);
                 coupons.forEach(c => {
-                    embed.addFields({ name: `Mã: \`${c.code}\``, value: `Loại: ${c.discount_type} | Giá trị: ${c.discount_value} | Lượt dùng còn lại: ${c.uses_left}` });
+                    const expiry = c.expiry_date ? `<t:${Math.floor(new Date(c.expiry_date).getTime() / 1000)}:R>` : 'Không hết hạn';
+                    const uses = c.uses_left === -1 ? 'Vô hạn' : c.uses_left;
+                    embed.addFields({ name: `Mã: \`${c.code}\``, value: `Giảm: ${c.discount_percentage}% | Lượt dùng: ${uses} | Hết hạn: ${expiry}` });
                 });
                 await interaction.editReply({ embeds: [embed] });
             }
@@ -193,7 +191,7 @@ client.on(Events.InteractionCreate, async interaction => {
                 const appliedCoupon = userAppliedCoupons.get(interaction.user.id);
                 let finalPrice = account.price;
                 if (appliedCoupon) {
-                    if (appliedCoupon.discount_type === 'percentage') { finalPrice -= Math.floor(account.price * (appliedCoupon.discount_value / 100)); } else { finalPrice -= appliedCoupon.discount_value; }
+                    finalPrice -= Math.floor(account.price * (appliedCoupon.discount_percentage / 100));
                     finalPrice = Math.max(0, finalPrice);
                 }
                 const orderId = `VALO${Date.now()}`;
@@ -280,6 +278,34 @@ client.on(Events.InteractionCreate, async interaction => {
                     await interaction.editReply({ content: '❌ Có lỗi xảy ra khi thêm tài khoản.' });
                 }
             }
+            else if (interaction.customId === 'create_coupon_modal') {
+                if (!hasAdminPermission(interaction)) return;
+                await interaction.deferReply({ ephemeral: true });
+                try {
+                    const code = interaction.fields.getTextInputValue('coupon_code');
+                    const discount = parseInt(interaction.fields.getTextInputValue('coupon_discount'));
+                    const usesRaw = interaction.fields.getTextInputValue('coupon_uses').toLowerCase();
+                    const expiryRaw = interaction.fields.getTextInputValue('coupon_expiry').toLowerCase();
+                    const uses = usesRaw === 'vohan' ? -1 : parseInt(usesRaw);
+                    if (isNaN(discount) || isNaN(uses)) return interaction.editReply("Giảm giá và lượt dùng phải là số (hoặc 'vohan').");
+                    let expiryDate = null;
+                    if (expiryRaw) {
+                        const duration = parseInt(expiryRaw.slice(0, -1));
+                        const unit = expiryRaw.slice(-1);
+                        if (isNaN(duration)) return interaction.editReply("Thời gian hiệu lực không hợp lệ.");
+                        expiryDate = new Date();
+                        if (unit === 'd') expiryDate.setDate(expiryDate.getDate() + duration);
+                        else if (unit === 'h') expiryDate.setHours(expiryDate.getHours() + duration);
+                        else if (unit === 'm') expiryDate.setMinutes(expiryDate.getMinutes() + duration);
+                        else return interaction.editReply("Đơn vị thời gian không hợp lệ (d, h, m).");
+                    }
+                    addCoupon(code, discount, uses, expiryDate ? expiryDate.toISOString() : null);
+                    await interaction.editReply(`✅ Đã tạo thành công coupon \`${code.toUpperCase()}\`!`);
+                } catch (error) {
+                    console.error(error);
+                    await interaction.editReply('❌ Lỗi: Mã coupon này có thể đã tồn tại.');
+                }
+            }
             else if (interaction.customId.startsWith('submit_card_')) {
                 await interaction.deferReply({ ephemeral: true });
                 const accountId = interaction.customId.split('_')[2];
@@ -311,16 +337,15 @@ client.on(Events.InteractionCreate, async interaction => {
                 const code = interaction.fields.getTextInputValue('coupon_code');
                 const coupon = getCoupon(code);
                 const account = getAccountById(accountId);
-                if (!coupon || coupon.uses_left <= 0) return interaction.followUp({ content: 'Mã giảm giá không hợp lệ hoặc đã hết lượt.', ephemeral: true });
+
+                if (!coupon || coupon.uses_left === 0) return interaction.followUp({ content: 'Mã giảm giá không hợp lệ hoặc đã hết lượt.', ephemeral: true });
+                if (coupon.expiry_date && new Date(coupon.expiry_date) < new Date()) return interaction.followUp({ content: 'Mã giảm giá đã hết hạn.', ephemeral: true });
+
                 userAppliedCoupons.set(interaction.user.id, coupon);
                 let finalPrice = account.price, discountAmount = 0;
-                if (coupon.discount_type === 'percentage') {
-                    discountAmount = Math.floor(account.price * (coupon.discount_value / 100));
-                    finalPrice -= discountAmount;
-                } else {
-                    discountAmount = coupon.discount_value;
-                    finalPrice -= discountAmount;
-                }
+                discountAmount = Math.floor(account.price * (coupon.discount_percentage / 100));
+                finalPrice = account.price - discountAmount;
+
                 const updatedEmbed = EmbedBuilder.from(interaction.message.embeds[0]).setFields({ name: 'Giá gốc', value: `~~${account.price.toLocaleString('vi-VN')} VNĐ~~` }, { name: 'Giảm giá', value: `- ${discountAmount.toLocaleString('vi-VN')} VNĐ` }, { name: 'Giá cuối cùng', value: `**${Math.max(0, finalPrice).toLocaleString('vi-VN')} VNĐ**` }).setColor(0x2ECC71);
                 const newComponents = interaction.message.components.map(row => {
                     const newRow = new ActionRowBuilder();
